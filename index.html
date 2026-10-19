@@ -173,10 +173,11 @@
                 const data = d.data();
                 if (data.active === false) return;
                 if (!data.variants || data.variants.length === 0) {
-                    data.variants = [{ name: '標準規格', costJPY: data.costJPY || 0, price: data.price || 0, deposit: data.price || 0, stock: data.stock || 0 }];
+                    data.variants = [{ name: '標準規格', costJPY: data.costJPY || 0, price: data.price || 0, deposit: data.price || 0, stock: data.stock || 0, maxPerPerson: data.maxPerPerson || 0 }];
                 }
                 data.variants.forEach(v => {
                     if (v.deposit === undefined) v.deposit = v.price || 0;
+                    if (v.maxPerPerson === undefined) v.maxPerPerson = 0;
                 });
 
                 products.push({ id: d.id, ...data });
@@ -266,7 +267,7 @@
                                 '<img src="' + item.image + '" class="w-12 h-12 rounded-xl object-cover bg-white border border-[#E3D5C5]">' +
                                 '<div class="flex-grow">' +
                                     '<div class="font-bold text-sm text-[#2C221E]"><span class="text-xs text-[#967259]">[' + (item.category || '選物') + ']</span> ' + item.name + '</div>' +
-                                    '<div class="text-xs text-[#967259]">規格: ' + item.variantName + '</div>' +
+                                    '<div class="text-xs text-[#967259]">規格: ' + item.variantName + (item.maxPerPerson > 0 ? ` (每人限購 ${item.maxPerPerson} 個)` : '') + '</div>' +
                                     '<div class="text-xs text-[#7D6B5D]">售價 NT$ ' + item.price.toLocaleString() + ' (預付訂金 NT$ ' + item.deposit.toLocaleString() + ') x ' + item.quantity + '</div>' +
                                 '</div>' +
                                 '<button onclick="window.removeFromCart(\'' + item.cartItemId + '\')" class="text-rose-500 p-1 cursor-pointer"><i class="fa-solid fa-trash-can"></i></button>' +
@@ -397,7 +398,6 @@
             renderShopProducts();
         };
 
-        /* --- 修正：商品列表隱藏訂金提示，只保留售價與規格選擇 --- */
         window.renderShopProducts = function() {
             const grid = document.getElementById('shop-product-grid');
             let filtered = currentCategory === 'all' ? products : products.filter(p => p.category === currentCategory);
@@ -412,18 +412,22 @@
                 const vIdx = selectedVariants[p.id] !== undefined ? selectedVariants[p.id] : 0;
                 const currentVar = p.variants[vIdx] || p.variants[0];
                 const isOutOfStock = (currentVar.stock <= 0);
+                const limitText = currentVar.maxPerPerson > 0 ? `<span class="ml-1 text-[11px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold">限購${currentVar.maxPerPerson}個</span>` : '';
 
                 const variantOptionsHTML = p.variants.map((v, idx) => 
-                    `<option value="${idx}" ${idx === vIdx ? 'selected' : ''}>${v.name} ${v.stock <= 0 ? '(售完)' : ''}</option>`
+                    `<option value="${idx}" ${idx === vIdx ? 'selected' : ''}>${v.name} ${v.maxPerPerson > 0 ? `(限購${v.maxPerPerson}個)` : ''} ${v.stock <= 0 ? '(售完)' : ''}</option>`
                 ).join('');
 
                 return '<div class="bg-white rounded-2xl shadow-sm border border-[#E3D5C5] overflow-hidden flex flex-col justify-between group">' +
                     '<div>' +
-                        '<div class="h-52 bg-[#F8F4EE] overflow-hidden flex items-center justify-center p-2">' +
+                        '<div class="h-52 bg-[#F8F4EE] overflow-hidden flex items-center justify-center p-2 relative">' +
                             '<img src="' + images[0] + '" class="max-w-full max-h-full object-contain group-hover:scale-105 transition duration-300">' +
                         '</div>' +
                         '<div class="p-4 space-y-2">' +
-                            '<span class="text-[11px] bg-[#F3E8DB] text-[#7D6B5D] border border-[#D7C4B7] px-2 py-0.5 rounded font-bold">' + (p.category || '選物') + '</span>' +
+                            '<div class="flex items-center gap-1">' +
+                                '<span class="text-[11px] bg-[#F3E8DB] text-[#7D6B5D] border border-[#D7C4B7] px-2 py-0.5 rounded font-bold">' + (p.category || '選物') + '</span>' +
+                                limitText +
+                            '</div>' +
                             '<h3 class="font-bold text-[#2C221E] text-sm mt-1 line-clamp-2">' + p.name + '</h3>' +
                             '<div>' +
                                 '<select onchange="window.changeProductVariant(\'' + p.id + '\', this.value)" class="w-full px-3 py-1 border border-[#D7C4B7] rounded-xl text-xs bg-[#FDFBF7] text-[#2C221E] font-medium">' +
@@ -444,6 +448,7 @@
             }).join('');
         };
 
+        /* --- 防呆核心：加入購物車時校驗限購數量 --- */
         window.addToCartFromShop = function(productId) {
             const prod = products.find(p => p.id === productId);
             if (!prod) return;
@@ -454,9 +459,15 @@
 
             const cartItemId = prod.id + '_' + vIdx;
             const existing = cart.find(item => item.cartItemId === cartItemId);
+            const currentCartQty = existing ? existing.quantity : 0;
+
+            // 限購檢查（若 maxPerPerson > 0）
+            if (variant.maxPerPerson > 0 && (currentCartQty + 1) > variant.maxPerPerson) {
+                return alert(`⚠️ 限購提示：【${prod.name} - ${variant.name}】每人最多限購 ${variant.maxPerPerson} 個！您購物車已加入 ${currentCartQty} 個。`);
+            }
 
             if (existing) {
-                if (existing.quantity >= variant.stock) return alert('已達上限！');
+                if (existing.quantity >= variant.stock) return alert('已達庫存上限！');
                 existing.quantity += 1;
             } else {
                 cart.push({
@@ -464,6 +475,7 @@
                     name: prod.name, category: prod.category || '選物',
                     variantName: variant.name, price: variant.price,
                     deposit: variant.deposit !== undefined ? variant.deposit : variant.price,
+                    maxPerPerson: variant.maxPerPerson || 0,
                     quantity: 1, image: (prod.images && prod.images[0]) ? prod.images[0] : FALLBACK_IMAGE
                 });
             }
