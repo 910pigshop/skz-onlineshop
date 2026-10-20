@@ -341,77 +341,105 @@
             }
         };
 
-        window.submitOrder = async function(e) {
-            e.preventDefault();
-            const groupNickname = document.getElementById('pay-group-nickname').value.trim();
-            const socialAccount = document.getElementById('pay-social-account').value.trim();
-            const senderName = document.getElementById('pay-sender-name').value.trim();
-            const accountLastFive = document.getElementById('pay-account-suffix').value.trim();
-            const payAmount = Number(document.getElementById('pay-actual-amount').value) || 0;
-            const payTime = document.getElementById('pay-time').value;
+window.submitOrder = async function(e) {
+    e.preventDefault();
+    const groupNickname = document.getElementById('pay-group-nickname').value.trim();
+    const socialAccount = document.getElementById('pay-social-account').value.trim();
+    const senderName = document.getElementById('pay-sender-name').value.trim();
+    const accountLastFive = document.getElementById('pay-account-suffix').value.trim();
+    const payAmount = Number(document.getElementById('pay-actual-amount').value) || 0;
+    const payTime = document.getElementById('pay-time').value;
 
-            const selectedBank = bankAccounts[selectedBankIndex] || { name: '未指定', account: '' };
-            const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-            const orderNo = 'ORD-' + dateStr + '-' + Math.floor(1000 + Math.random() * 9000);
-            createdOrderNo = orderNo;
+    const selectedBank = bankAccounts[selectedBankIndex] || { name: '未指定', account: '' };
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const orderNo = 'ORD-' + dateStr + '-' + Math.floor(1000 + Math.random() * 9000);
+    createdOrderNo = orderNo;
 
-            const totalAmount = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-            const totalDepositAmount = cart.reduce((sum, item) => sum + (item.deposit * item.quantity), 0);
-            const totalBalanceAmount = totalAmount - totalDepositAmount;
+    const totalAmount = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const totalDepositAmount = cart.reduce((sum, item) => sum + (item.deposit * item.quantity), 0);
+    const totalBalanceAmount = totalAmount - totalDepositAmount;
 
-            const orderData = {
-                orderNo,
-                createdAt: new Date().toISOString(),
-                items: cart,
-                totalAmount,
-                totalDepositAmount,
-                totalBalanceAmount,
-                payAmount,
-                groupNickname,
-                socialAccount,
-                senderName,
-                accountLastFive,
-                payTime,
-                bankName: selectedBank.name,
-                bankAccount: selectedBank.account,
-                status: '待查帳',
-                weight: ''
-            };
+    const orderData = {
+        orderNo,
+        createdAt: new Date().toISOString(),
+        items: cart,
+        totalAmount,
+        totalDepositAmount,
+        totalBalanceAmount,
+        payAmount,
+        groupNickname,
+        socialAccount,
+        senderName,
+        accountLastFive,
+        payTime,
+        bankName: selectedBank.name,
+        bankAccount: selectedBank.account,
+        status: '待查帳',
+        weight: ''
+    };
 
-            try {
-                // 1. 寫入 Firestore 訂單資料庫
-                await Firestore.addDoc(Firestore.collection(db, "orders"), orderData);
+    try {
+        // 建立 Firestore 批次操作
+        const batch = Firestore.writeBatch(db);
 
-                // 2. 異步呼叫 GAS 自動發送 Gmail 通知信
-                const itemsSummaryText = cart.map(item => 
-                    `• [${item.category || '選物'}] ${item.name} (${item.variantName}) x ${item.quantity} (NT$ ${item.price})`
-                ).join('\n');
+        // 1. 新增訂單文件
+        const newOrderRef = Firestore.doc(Firestore.collection(db, "orders"));
+        batch.set(newOrderRef, orderData);
 
-                const emailPayload = {
-                    orderNo: orderNo,
-                    createdAt: new Date().toLocaleString(),
-                    nickname: groupNickname,
-                    socialAccount: socialAccount,
-                    senderName: senderName,
-                    accountLastFive: accountLastFive,
-                    payAmount: payAmount,
-                    itemsSummary: itemsSummaryText
-                };
+        // 2. 逐一扣減購物車內商品規格的庫存
+        for (const cartItem of cart) {
+            const productRef = Firestore.doc(db, "products", cartItem.id);
+            const targetProd = products.find(p => p.id === cartItem.id);
 
-                fetch(GAS_WEB_APP_URL, {
-                    method: 'POST',
-                    mode: 'no-cors',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(emailPayload)
-                }).catch(err => console.error("寄送通知信失敗:", err));
+            if (targetProd && targetProd.variants && targetProd.variants[cartItem.variantIndex]) {
+                // 深拷貝規格陣列，避免直接修改全域快取
+                const updatedVariants = JSON.parse(JSON.stringify(targetProd.variants));
+                const currentStock = updatedVariants[cartItem.variantIndex].stock || 0;
+                
+                // 計算扣減後的庫存（最低為 0）
+                updatedVariants[cartItem.variantIndex].stock = Math.max(0, currentStock - cartItem.quantity);
 
-                // 3. 重置購物車與開啟成功彈窗
-                cart = []; updateCartBadge(); closeCartModal();
-                document.getElementById('success-order-no').textContent = orderNo;
-                document.getElementById('success-modal').classList.remove('hidden');
+                // 將更新後的規格陣列寫入批次
+                batch.update(productRef, { variants: updatedVariants });
+            }
+        }
 
-            } catch (err) { alert("結帳發生錯誤，請稍後再試。"); }
+        // 批次執行所有寫入動作（確保訂單成立與庫存扣減原子性完成）
+        await batch.commit();
+
+        // 3. 異步呼叫 GAS 自動發送 Gmail 通知信
+        const itemsSummaryText = cart.map(item => 
+            `• [${item.category || '選物'}] ${item.name} (${item.variantName}) x ${item.quantity} (NT$ ${item.price})`
+        ).join('\n');
+
+        const emailPayload = {
+            orderNo: orderNo,
+            createdAt: new Date().toLocaleString(),
+            nickname: groupNickname,
+            socialAccount: socialAccount,
+            senderName: senderName,
+            accountLastFive: accountLastFive,
+            payAmount: payAmount,
+            itemsSummary: itemsSummaryText
         };
+
+        fetch(GAS_WEB_APP_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(emailPayload)
+        }).catch(err => console.error("寄送通知信失敗:", err));
+
+        // 4. 重置購物車與開啟成功彈窗
+        cart = []; updateCartBadge(); closeCartModal();
+        document.getElementById('success-order-no').textContent = orderNo;
+        document.getElementById('success-modal').classList.remove('hidden');
+
+    } catch (err) { 
+        console.error("結帳失敗:", err);
+        alert("結帳發生錯誤，請稍後再試。"); 
+    }
+};
 
         window.removeFromCart = function(cartItemId) {
             cart = cart.filter(item => item.cartItemId !== cartItemId);
