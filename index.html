@@ -427,9 +427,24 @@
             renderShopProducts();
         };
 
+        // 新增功能：渲染前台商品時，自動過濾掉「已到達下架時間」的商品
         window.renderShopProducts = function() {
             const grid = document.getElementById('shop-product-grid');
-            let filtered = currentCategory === 'all' ? products : products.filter(p => p.category === currentCategory);
+            const now = new Date().getTime();
+
+            let filtered = products.filter(p => {
+                if (p.active === false) return false;
+                // 自動下架時間判斷
+                if (p.offTime) {
+                    const offTimeMs = new Date(p.offTime).getTime();
+                    if (now >= offTimeMs) return false; // 已過下架時間，自動隱藏
+                }
+                return true;
+            });
+
+            if (currentCategory !== 'all') {
+                filtered = filtered.filter(p => p.category === currentCategory);
+            }
 
             if (filtered.length === 0) {
                 grid.innerHTML = '<div class="col-span-full text-center py-16 text-[#A08D7D]">目前尚無商品。</div>';
