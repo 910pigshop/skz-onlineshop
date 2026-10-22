@@ -15,6 +15,8 @@
     <style>
         body { font-family: 'Noto Sans TC', sans-serif; }
         .font-serif-jp { font-family: 'Noto Serif JP', serif; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
     </style>
 </head>
 <body class="bg-[#FDFBF7] text-[#2C221E] min-h-screen flex flex-col antialiased">
@@ -349,7 +351,6 @@
             }
         };
 
-        // 核心修改：下單寫入訂單同時批次扣減庫存 (writeBatch)
         window.submitOrder = async function(e) {
             e.preventDefault();
             const submitBtn = document.getElementById('submit-order-btn');
@@ -391,14 +392,11 @@
             };
 
             try {
-                // 使用 WriteBatch 確保寫入訂單與扣減庫存具備原子性
                 const batch = Firestore.writeBatch(db);
 
-                // 1. 建立新訂單文件
                 const newOrderRef = Firestore.doc(Firestore.collection(db, "orders"));
                 batch.set(newOrderRef, orderData);
 
-                // 2. 逐一扣減商品庫存
                 for (const cartItem of cart) {
                     const productRef = Firestore.doc(db, "products", cartItem.id);
                     const targetProd = products.find(p => p.id === cartItem.id);
@@ -412,10 +410,8 @@
                     }
                 }
 
-                // 執行批次操作
                 await batch.commit();
 
-                // 3. 異步呼叫 GAS 自動發送 Gmail 通知信
                 const itemsSummaryText = cart.map(item => 
                     `• [${item.category || '選物'}] ${item.name} (${item.variantName}) x ${item.quantity} (NT$ ${item.price})`
                 ).join('\n');
@@ -438,7 +434,6 @@
                     body: JSON.stringify(emailPayload)
                 }).catch(err => console.error("寄送通知信失敗:", err));
 
-                // 4. 重置購物車與開啟成功彈窗
                 cart = []; updateCartBadge(); closeCartModal();
                 document.getElementById('success-order-no').textContent = orderNo;
                 document.getElementById('success-modal').classList.remove('hidden');
@@ -456,7 +451,6 @@
             updateCartBadge(); renderCartModalContent();
         };
 
-        // 新增功能：購物車內增減數量 (含庫存與限購驗證)
         window.updateCartItemQty = function(cartItemId, newQty) {
             const item = cart.find(i => i.cartItemId === cartItemId);
             if (!item) return;
@@ -558,7 +552,6 @@
             }).join('');
         };
 
-        // 核心修改：加入購物車包含限購 maxPerPerson 與庫存雙重驗證
         window.addToCartFromShop = function(productId) {
             const prod = products.find(p => p.id === productId);
             if (!prod) return;
@@ -567,17 +560,15 @@
 
             if (variant.stock <= 0) return alert('該規格已售完！');
 
-            const maxLimit = variant.maxPerPerson || 0; // 0 代表不限購
+            const maxLimit = variant.maxPerPerson || 0;
             const cartItemId = prod.id + '_' + vIdx;
             const existing = cart.find(item => item.cartItemId === cartItemId);
             const currentQtyInCart = existing ? existing.quantity : 0;
 
-            // 1. 驗證庫存上限
             if (currentQtyInCart + 1 > variant.stock) {
                 return alert(`【${prod.name} - ${variant.name}】庫存僅剩 ${variant.stock} 件，無法再增加了！`);
             }
 
-            // 2. 驗證每人限購上限
             if (maxLimit > 0 && (currentQtyInCart + 1) > maxLimit) {
                 return alert(`【${prod.name} - ${variant.name}】每人限購 ${maxLimit} 件，無法再加購更多！`);
             }
@@ -604,6 +595,7 @@
             alert('已將【' + prod.name + ' - ' + variant.name + '】加入購物車！');
         };
 
+        // 🔍 核心關鍵：訂單查詢邏輯 (整合賣貨便跳轉按鈕)
         window.queryOrders = function() {
             const rawInput = document.getElementById('query-order-nos').value;
             const container = document.getElementById('query-result-container');
@@ -626,10 +618,34 @@
                         return '<li>• <span class="text-[#967259] font-bold">[' + (i.category || '選物') + ']</span> ' + i.name + ' (' + i.variantName + ') x ' + i.quantity + '</li>';
                     }).join('') : '<li class="text-[#A08D7D]">無商品明細</li>';
 
+                    // 1. 判斷是否為「請至賣貨便下單」貨態
+                    const isReadyForMyShip = o.status === '請至賣貨便下單';
+
+                    // 2. 自動尋找商品設定的賣貨便連結，若無則降級為預設網址
+                    let targetMyShipUrl = 'https://myship.7-11.com.tw/general/detail/GM2412289778986';
+                    if (o.items && o.items.length > 0) {
+                        const matchedProduct = products.find(p => p.name === o.items[0].name && p.myshipUrl);
+                        if (matchedProduct && matchedProduct.myshipUrl) {
+                            targetMyShipUrl = matchedProduct.myshipUrl;
+                        }
+                    }
+
+                    // 3. 賣貨便按鈕 HTML
+                    const myshipButtonHTML = isReadyForMyShip ? `
+                        <div class="mt-3 p-3 bg-amber-50 rounded-xl border border-amber-200 space-y-2">
+                            <p class="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                                <i class="fa-solid fa-truck-fast text-amber-700"></i> 包裹已抵台！請點擊下方按鈕前往 7-11 賣貨便下單尾款：
+                            </p>
+                            <a href="${targetMyShipUrl}" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 w-full bg-[#E85522] hover:bg-[#c94317] text-white font-bold py-2.5 px-4 rounded-xl text-xs transition shadow-sm cursor-pointer">
+                                <i class="fa-solid fa-cart-shopping"></i> 前往 7-11 賣貨便下單尾款 (NT$ ${(o.totalBalanceAmount || 0).toLocaleString()})
+                            </a>
+                        </div>
+                    ` : '';
+
                     return '<div class="p-4 bg-white rounded-2xl border border-[#E3D5C5] space-y-3 shadow-sm">' +
                         '<div class="flex justify-between items-center border-b border-[#E3D5C5] pb-2">' +
                             '<span class="font-bold text-[#967259] text-base">' + o.orderNo + '</span>' +
-                            '<span class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[#F3E8DB] text-[#4A3B32] border border-[#D7C4B7]">' + (o.status || '處理中') + '</span>' +
+                            '<span class="text-xs px-2.5 py-0.5 rounded-full font-bold ' + (isReadyForMyShip ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-[#F3E8DB] text-[#4A3B32] border border-[#D7C4B7]') + '">' + (o.status || '處理中') + '</span>' +
                         '</div>' +
                         '<div class="space-y-2">' +
                             '<ul class="text-xs space-y-1 bg-[#F8F4EE] p-3 rounded-xl border border-[#E3D5C5] text-[#2C221E]">' + itemsHTML + '</ul>' +
@@ -643,6 +659,7 @@
                         '<div class="flex justify-between items-center text-xs text-[#2C221E] pt-1">' +
                             '<div><strong>包裹重量:</strong> ' + (o.weight ? o.weight + ' kg' : '處理中') + '</div>' +
                         '</div>' +
+                        myshipButtonHTML +
                     '</div>';
                 }).join('') +
             '</div>';
